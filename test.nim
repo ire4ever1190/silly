@@ -1,5 +1,5 @@
 import ./main
-import std/unittest
+import std/[unittest, options]
 
 
 suite "CLI Parsing":
@@ -56,3 +56,10 @@ suite "Argument Parsing":
       (argument("arg1", ""), flag("fuzz", ""), flag("foo", ""), argument("arg2", "")),
       ("arg1", "buzz", "bar", "arg2")
     )
+
+  test "Throws error if non-optional flag is missing":
+    expect MissingFlag:
+      discard [].parseCli().parse((flag("foo", ""),))
+
+  test "Doesn't throw if optional flag is missing":
+    discard [].parseCli().parse((flag("foo", "", Option[string]),))

@@ -2,18 +2,13 @@ import pkg/[casserole, nort]
 
 import libdump/types
 
-import std/[tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, options]
+import
+  std/
+    [tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, options, sets, cmdline]
 
-#[
- ahead of time:
-   - name
-   - help
-   - type
-   - required
+export sets
 
-]#
-
-type ArgParser[T] = proc (input: string, result: out T) {.nimcall.}
+type ArgParser[T] = proc(input: string, result: out T) {.nimcall.}
 
 type
   Flag[T] = object
@@ -26,8 +21,7 @@ type
     Option ## -o
     Argument ## Just anything positional
 
-  InputField = object
-    ## Parsed CLI input
+  InputField = object ## Parsed CLI input
     case kind: ArgType
     of NamedFlag:
       flag: string
@@ -35,6 +29,10 @@ type
       opt: char
     of Argument: discard
     value: string
+
+  CliError = object of CatchableError
+  MissingFlag* = object of CliError
+    flag: string
 
 proc `$`*(input: InputField): string =
   case input.kind
@@ -53,6 +51,9 @@ let
   optGram: Combinator[tuple[key: string, value: Option[string]]] = -e("-") * dot().map(it => $it)$key * (?(-e('=') * +dot()))$value
   combinedGram = flagGram | optGram
 
+proc optional*[T](flag: Flag[T]): bool =
+  T is options.Option
+
 proc parseCli*(args: openArray[string]): seq[InputField] =
   ## Parses CLI args passed into the program into something structured.
   ## Currently supports very basic rules (Short and long form have `=` optional)
@@ -63,8 +64,11 @@ proc parseCli*(args: openArray[string]): seq[InputField] =
   while i < args.len:
     let segment = args[i]
     if Some(matched) ?== combinedGram.match(segment):
-      let value = if Some(value) ?== matched.value: value
-                  else: args[i + 1] # TODO: Index check
+      let value =
+        if Some(value) ?== matched.value:
+          value
+        else:
+          args[i + 1] # TODO: Index check
 
       if segment[1] == '-':
         result &= InputField(kind: NamedFlag, flag: matched.key, value: value)
@@ -86,6 +90,11 @@ proc parseCliValue*(input: string, result: out int) =
   ## Parses argument as an integer
   result = input.parseInt()
 
+proc parseCliValue*[T](input: string, result: out Option[T]) =
+  var val: T
+  parseCliValue(input, val)
+  result = some(val)
+
 proc flag*[T](name, help: string, _: typedesc[T]): Flag[T] =
   Flag[T](name: name, help: help, parser: parseCliValue)
 
@@ -102,32 +111,59 @@ proc parse*[T: tuple](inputs: seq[InputField], parsers: T): transformFields(T, i
   ## Parses CLI inputs into actual data via parsers
   ## `parsers` is meant to be an anonymous tuple of fields to parse
 
-  var currentArg = 0
+  var
+    currentArg = 0
+    seen = initHashSet[string]()
+
+  let expectToSee = block:
+    var res = initHashSet[string]()
+    for _, parser in fieldPairs(parsers):
+      if not parser.optional:
+        res.incl(parser.name)
+    res
 
   for input in inputs:
     # Go through each input, and for each input go through each parser
     var parserArg = 0 # Track which argument parser we are currently looking it
-    var argConsumed = false # Only one positional parser should consume each Argument input
+    var argConsumed = false
+      # Only one positional parser should consume each Argument input
     for k1, expected in fieldPairs(parsers):
       for k2, res in fieldPairs(result):
         when k1 == k2: # Match when field names are the same
           let parser: ArgParser[expected.T] = expected.parser
+          var isRight = false
           case input.kind
           of NamedFlag:
             # Still need a guard that
             if input.flag == expected.name:
-              parser(input.value, res)
+              isRight = true
           of Option:
             if input.opt == expected.name[0]:
-              parser(input.value, res)
+              isRight = true
           of Argument:
             if expected.kind == Argument and currentArg == parserArg and not argConsumed:
-              parser(input.value, res)
+              isRight = true
               argConsumed = true
+
+          if isRight:
+            parser(input.value, res)
+            seen.incl(expected.name)
+
           if expected.kind == Argument:
             parserArg += 1
     if argConsumed:
       currentArg += 1 # Next positional input goes to the next argument parser
 
+  # Check we didn't miss anything
+  for missing in expectToSee - seen:
+    raise (ref MissingFlag)(flag: missing)
+
 proc parse*[T: tuple](argv: openArray[string], parsers: T): transformFields(T, inp.T) =
-  argv.parseCli().parse(parsers)
+  try:
+    return argv.parseCli().parse(parsers)
+  except MissingFlag as e:
+    stderr.writeline(fmt"Missing value for '{e.flag}'")
+    quit(QuitFailure)
+
+proc parse*[T: tuple](parsers: T): transformFields(T, inp.T) =
+  commandLineParams().parse(parsers)
