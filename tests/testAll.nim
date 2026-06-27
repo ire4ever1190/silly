@@ -1,4 +1,4 @@
-import ./main
+import silly
 import std/[unittest, options]
 
 

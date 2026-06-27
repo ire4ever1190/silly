@@ -4,7 +4,7 @@ import libdump/types
 
 import
   std/
-    [tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, options, sets, cmdline]
+    [tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, options, sets, cmdline, terminal]
 
 export sets
 
@@ -33,6 +33,13 @@ type
   CliError = object of CatchableError
   MissingFlag* = object of CliError
     flag: string
+
+  CLIApp[T: tuple] = object
+    ## TopLevel to keep track of app metadata.
+    ## Also makes things like `--help` and `--version` work
+    version: string
+    name, description: string
+    args: T
 
 proc `$`*(input: InputField): string =
   case input.kind
@@ -67,6 +74,8 @@ proc parseCli*(args: openArray[string]): seq[InputField] =
       let value =
         if Some(value) ?== matched.value:
           value
+        elif matched.key in ["version", "help"]: # TODO: Support flags that don't need values
+          ""
         else:
           args[i + 1] # TODO: Index check
 
@@ -167,3 +176,46 @@ proc parse*[T: tuple](argv: openArray[string], parsers: T): transformFields(T, i
 
 proc parse*[T: tuple](parsers: T): transformFields(T, inp.T) =
   commandLineParams().parse(parsers)
+
+const NimblePkgVersion {.strdefine.} = "Unknown"
+
+proc initApp*[T](name, description: string, args: T): CLIApp[T] =
+  return CLIApp[T](
+    name: name,
+    version: NimblePkgVersion,
+    description: description,
+    args: args
+  )
+
+proc help(app: CLIApp): string =
+  ## Returns the help string for an app
+  result = fmt"{app.name} {app.version}"
+  result &= "\n\n"
+  result &= app.description
+  result &= "\n"
+  # Generate top level usage
+  result &= fmt"Usage: {app.name}"
+  for _, info in fieldPairs(app.args):
+    result &= " "
+    case info.kind
+    of Argument:
+      result &= "[" & info.name & "]"
+    else: discard
+    if info.optional:
+      result &= "?"
+
+  # Add documentation for each field
+  for _, info in fieldPairs(app.args):
+    result &= "\n  " & ansiStyleCode(styleBright) & info.name & ansiResetCode & " [" & ansiStyleCode(styleItalic) & $info.T & ansiResetCode & "]: " & info.help
+
+proc parse*[T](app: CLIApp[T]): transformFields(T, inp.T) =
+  # Do a first pass to see if the user wants help or the version
+  let args = commandLineParams().parseCli()
+  for arg in args:
+    if arg.kind == NamedFlag and arg.flag == "version":
+      echo app.version
+      quit QuitSuccess
+    if arg.kind == NamedFlag and arg.flag == "help":
+      echo app.help
+      quit QuitSuccess
+  return app.args.parse()
