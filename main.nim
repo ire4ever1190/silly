@@ -13,7 +13,7 @@ import std/[tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, 
 
 ]#
 
-type ArgParser[T] = proc (input: string): T {.nimcall.}
+type ArgParser[T] = proc (input: string, result: out T) {.nimcall.}
 
 type
   Flag[T] = object
@@ -78,26 +78,25 @@ proc parseCli*(args: openArray[string]): seq[InputField] =
       result &= InputField(kind: Argument, value: segment)
     i += 1
 
-
-proc stringInput(input: string): string =
+proc parseCliValue*(input: string, result: out string) =
   ## Parses argument as a string
-  return input
+  result = input
 
-proc intInput(input: string): int =
+proc parseCliValue*(input: string, result: out int) =
   ## Parses argument as an integer
-  return input.parseInt()
+  result = input.parseInt()
 
-proc flag*[T](name, help: string, parser: ArgParser[T]): Flag[T] =
-  Flag[T](name: name, help: help, parser: parser)
+proc flag*[T](name, help: string, _: typedesc[T]): Flag[T] =
+  Flag[T](name: name, help: help, parser: parseCliValue)
 
 proc flag*(name, help: string): Flag[string] =
-  flag(name, help, stringInput)
+  flag(name, help, string)
 
-proc argument*[T](name, help: string, parser: ArgParser[T]): Flag[T] =
-  Flag[T](kind: Argument, name: name, help: help, parser: parser)
+proc argument*[T](name, help: string, _: typedesc[T]): Flag[T] =
+  Flag[T](kind: Argument, name: name, help: help, parser: parseCliValue)
 
-proc argument*[string](name, help: string): Flag[string] =
-  argument(name, help, stringInput)
+proc argument*(name, help: string): Flag[string] =
+  argument(name, help, string)
 
 proc parse*[T: tuple](inputs: seq[InputField], parsers: T): transformFields(T, inp.T) =
   ## Parses CLI inputs into actual data via parsers
@@ -106,26 +105,29 @@ proc parse*[T: tuple](inputs: seq[InputField], parsers: T): transformFields(T, i
   var currentArg = 0
 
   for input in inputs:
-    # First we need to line up the parsers and result tuples.
-    # Need to do the looping better so we are
-    var parserArg = 0
+    # Go through each input, and for each input go through each parser
+    var parserArg = 0 # Track which argument parser we are currently looking it
+    var argConsumed = false # Only one positional parser should consume each Argument input
     for k1, expected in fieldPairs(parsers):
       for k2, res in fieldPairs(result):
         when k1 == k2: # Match when field names are the same
+          let parser: ArgParser[expected.T] = expected.parser
           case input.kind
           of NamedFlag:
             # Still need a guard that
             if input.flag == expected.name:
-              res = expected.parser(input.value)
+              parser(input.value, res)
           of Option:
             if input.opt == expected.name[0]:
-              res = expected.parser(input.value)
+              parser(input.value, res)
           of Argument:
-            if expected.kind == Argument:
-              # Build search for lining up the argument
-              for _, val in fieldPairs(result):
-
-          else: discard
+            if expected.kind == Argument and currentArg == parserArg and not argConsumed:
+              parser(input.value, res)
+              argConsumed = true
+          if expected.kind == Argument:
+            parserArg += 1
+    if argConsumed:
+      currentArg += 1 # Next positional input goes to the next argument parser
 
 proc parse*[T: tuple](argv: openArray[string], parsers: T): transformFields(T, inp.T) =
   argv.parseCli().parse(parsers)
