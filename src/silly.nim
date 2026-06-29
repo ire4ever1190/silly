@@ -4,9 +4,28 @@ import libdump/types
 
 import
   std/
-    [tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, options, sets, cmdline, terminal]
+    [tables, strutils, sequtils, sugar, parseopt, strformat, parseutils, options, sets, cmdline, terminal, envvars]
 
 export sets
+
+proc envTrue(key: string): bool = getEnv(key) notin ["0", "", "n"]
+
+proc supportsStyles(): bool =
+  not (envTrue("NO_COLOR") or envTrue("CI"))
+
+proc styled(style: Style, text: string): string =
+  if supportsStyles():
+    result = ansiStyleCode(style) & text & ansiResetCode
+  else:
+    result = text
+
+proc styled(styles: set[Style], text: string): string =
+  if supportsStyles():
+    for s in styles:
+      result &= ansiStyleCode(s)
+    result &= text & ansiResetCode
+  else:
+    result = text
 
 type ArgParser[T] = proc(input: string, result: out T) {.nimcall.}
 
@@ -206,7 +225,7 @@ proc help(app: CLIApp): string =
 
   # Add documentation for each field
   for _, info in fieldPairs(app.args):
-    result &= "\n  " & ansiStyleCode(styleBright) & info.name & ansiResetCode & " [" & ansiStyleCode(styleItalic) & $info.T & ansiResetCode & "]: " & info.help
+    result &= "\n  " & styled(styleBright, info.name) & " [" & styled(styleItalic, $info.T) & "]: " & info.help
 
 proc parse*[T](app: CLIApp[T]): transformFields(T, inp.T) =
   # Do a first pass to see if the user wants help or the version
